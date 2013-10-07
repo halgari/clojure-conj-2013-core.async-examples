@@ -429,3 +429,33 @@
 (<!! (slurp-async "project.clj"))
 
 (close! slurp-service)
+
+
+;;;; ClojureScript examples ;;;;
+
+(require '[cljs.core.async.macros :refer [go]])
+
+(require '[cemerick.piggieback]
+         '[cemerick.austin]
+         '[cemerick.austin.repls])
+(cemerick.piggieback/cljs-repl)
+(cemerick.austin.repls/exec
+ :exec-cmds ["open" "-ga" "/Applications/Google Chrome.app"])
+
+(cemerick.austin/exec-env )
+
+(require '[cljs.repl :as repl])
+(require '[cljs.repl.browser :as browser])
+
+(def env (browser/repl-env))
+(repl/repl env)
+
+(go 42)
+
+(def repl-env (reset! cemerick.austin.repls/browser-repl-env
+                      (cemerick.austin/repl-env)))
+(cemerick.austin.repls/cljs-repl repl-env)
+
+
+(ns cljs-examples
+  (:require [cljs.core.async :refer [chan put! take!]]))
