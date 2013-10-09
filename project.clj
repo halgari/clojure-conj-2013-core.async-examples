@@ -13,7 +13,7 @@
   :profiles {:dev {:repl-options {:init-ns user}
                    :plugins [[com.cemerick/austin "0.1.0"]
                              [lein-cljsbuild "0.3.2"]]
-                   :cljsbuild {:builds [{:source-paths ["src/cljs"]
-                                         :compiler {:output-to "target/classes/public/app.js"
+                   :cljsbuild {:builds [{:source-paths ["src-cljs"]
+                                         :compiler {:output-to "app.js"
                                                     :optimizations :simple
                                                     :pretty-print true}}]}}})

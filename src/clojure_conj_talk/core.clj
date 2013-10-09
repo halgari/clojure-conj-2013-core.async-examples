@@ -1,6 +1,6 @@
 (ns clojure-conj-talk.core
   (:refer-clojure :exclude [map reduce into partition partition-by take merge])
-  (:require [clojure.core.async :refer :all]
+  (:require [clojure.core.async :refer :all :as async]
             [clojure.pprint :refer [pprint]]
             [cheshire.core :as cheshire]))
 
@@ -52,6 +52,7 @@
 
 ;; Well that's nice, but it's a pain to write code in that form,
 ;; so let's use something that uses promises:
+
 
 (defn takep [c]
   (let [p (promise)]
@@ -206,6 +207,71 @@
 
 (println (<!! dbbc) @a-size)
 
+;;;; Alt & Timeout ;;;;
+
+;; Sometimes we want to take the first available item from a bunch
+;; of channels. For this we use alt! and alt!!
+
+(def a (chan))
+(def b (chan))
+
+(put! a 42)
+
+(alts!! [a b]) ;; returns [value chan]
+
+;; Timeout is a channel that closes after X ms
+
+(<!! (timeout 1000))
+
+;; Often used with alt
+
+(alts!! [a (timeout 1000)])
+
+;; Alts can be used with writes
+
+(alts!! [[a 42]
+         (timeout 1000)])
+
+;; We can also provide defaults for alts
+
+(alts!! [a]
+        :default :nothing-found)
+
+;; By default, alts are tried in random order
+
+(put! a :a) ;; Do this a few times
+(put! b :b) ;; And this
+
+(alts!! [a b]) ;; Notice the order
+
+
+;; And again with :priority true
+
+(put! a :a)
+(put! b :b)
+
+(alts!! [a b]
+        :priority true)
+
+
+;;;;; Logging Handler ;;;;;
+
+(def log-chan (chan))
+
+(thread
+ (loop []
+   (when-let [v (<!! log-chan)]
+     (println v)
+     (recur)))
+ (println "Log Closed"))
+
+
+(close! log-chan)
+
+(defn log [msg]
+  (>!! log-chan msg))
+
+(log "foo")
 
 ;;;; Thread Pool Service
 
@@ -245,26 +311,6 @@
 
 (>!! exec-chan "Hello World")
 
-
-
-;;;;; Logging Handler ;;;;;
-
-(def log-chan (chan))
-
-(thread
- (loop []
-   (when-let [v (<!! log-chan)]
-     (println v)
-     (recur)))
- (println "Log Closed"))
-
-
-(close! log-chan)
-
-(defn log [msg]
-  (>!! log-chan msg))
-
-(log "foo")
 
 ;;;;; HTTP Async ;;;;;;
 
@@ -310,6 +356,28 @@
   (request-and-process (str "person/" id "?")))
 
 (<!! (people-by-id 3144))
+
+(defn avg [col]
+  (-> (clojure.core/reduce + 0 col)
+      (/ (count col))))
+
+(avg [1 2 3 4 5])
+
+(defn avg-cast-popularity [id]
+  (go
+   (let [cast (->> (movie-cast id)
+                   <!
+                   :cast
+                   (clojure.core/map :id)
+                   (clojure.core/map people-by-id)
+                   (async/map vector)
+                   <!
+                   (clojure.core/map :popularity)
+                   avg)]
+     cast)))
+
+(<!! (avg-cast-popularity 238))
+
 
 (defn omdb-by-title [q]
   (go
@@ -433,29 +501,171 @@
 
 ;;;; ClojureScript examples ;;;;
 
-(require '[cljs.core.async.macros :refer [go]])
+(require 'cljs.repl.browser)
 
-(require '[cemerick.piggieback]
-         '[cemerick.austin]
-         '[cemerick.austin.repls])
-(cemerick.piggieback/cljs-repl)
-(cemerick.austin.repls/exec
- :exec-cmds ["open" "-ga" "/Applications/Google Chrome.app"])
+(cemerick.piggieback/cljs-repl
+  :repl-env (cljs.repl.browser/repl-env :port 9000))
 
-(cemerick.austin/exec-env )
+#_(require-macros '[cljs.core.async.macros :refer [go]])
 
-(require '[cljs.repl :as repl])
-(require '[cljs.repl.browser :as browser])
 
-(def env (browser/repl-env))
-(repl/repl env)
-
-(go 42)
-
-(def repl-env (reset! cemerick.austin.repls/browser-repl-env
-                      (cemerick.austin/repl-env)))
-(cemerick.austin.repls/cljs-repl repl-env)
-
+#_(cemerick.piggieback/cljs-repl)
 
 (ns cljs-examples
-  (:require [cljs.core.async :refer [chan put! take!]]))
+  (:require [cljs.core.async :refer [chan put! take! timeout] :as async]
+            [goog.net.XhrIo])
+  (:require-macros [cljs.core.async.macros :refer [go]]))
+
+(js/alert "We're running ClojureScript")
+
+(def c (chan))
+
+(put! c 42)
+
+(take! c (fn [x]
+           (println x)))
+
+(go 32)
+
+(println take!)
+
+(def canvas (.getElementById js/document "canvas"))
+
+
+#_(defn ptake [chans]
+  (let [chanc (count chans)
+        a (atom chanc)
+        results (atom (vec (repeat chanc nil)))
+        result-chan (chan)]
+    (dotimes [x chanc]
+      (take! (nth chans x)
+             (fn [v]
+               (swap! results assoc x v)
+               (if (= 0 (swap! a dec))
+                 (put! result-chan @results)))))
+    result-chan))
+
+(def colors ["#FF0000"
+             "#00FF00"
+             "#0000FF"
+             "#00FFFF"
+             "#FFFF00"
+             "#FF00FF"])
+
+(defn make-cell [canvas x y]
+  (let [ctx (-> js/document
+                (.getElementById canvas)
+                (.getContext "2d"))]
+    (go (while true
+          (set! (.-fillStyle ctx) (rand-nth colors))
+          (.fillRect ctx x y 10 10)
+          (<! (timeout (rand-int 1000)))))))
+
+
+(defn make-scene [canvas rows cols]
+  (dotimes [x cols]
+    (dotimes [y rows]
+      (make-cell canvas (* 10 x) (* 10 y)))))
+
+
+(make-scene "canvas" 100 100)
+
+
+;;; Same HTTP Examples, but in the browser
+
+(defn http-get [url]
+  (let [c (chan 1)]
+    (goog.net.XhrIo/send url (fn [e]
+                               (let [xhr (.-target e)
+                                     obj (.getResponseJson xhr)]
+                                 (put! c (js->clj obj)))))
+    c))
+
+
+
+(def key "b4cb6cd7a349b47ccfbb80e05a601a7c")
+
+(defn request-and-process [url]
+  (go
+   (-> (str "http://api.themoviedb.org/3/" url "api_key=" key)
+       http-get
+       <!
+       )))
+
+(defn latest-movies []
+  (request-and-process "movies/latest?"))
+
+(defn top-rated-movies []
+  (request-and-process "movie/top_rated?"))
+
+(go (println (<! (top-rated-movies))))
+
+(defn movie-by-id [id]
+  (request-and-process (str "movie/" id "?")))
+
+(go (println (<! (movie-by-id 238))))
+
+(defn movie-cast [id]
+  (request-and-process (str "movie/" id "/casts?")))
+
+(go (println (<! (movie-cast 238))))
+
+(defn people-by-id [id]
+  (request-and-process (str "person/" id "?")))
+
+(go (println (<! (people-by-id 3144))))
+
+(defn avg [col]
+  (-> (clojure.core/reduce + 0 col)
+      (/ (count col))))
+
+(avg [1 2 3 4 5])
+
+(defn get-helper [k col]
+  (get col k))
+
+(defn avg-cast-popularity [id]
+  (go
+   (let [cast (->> (movie-cast id)
+                   <!
+                   (get-helper "cast")
+                   (clojure.core/map (partial get-helper "id"))
+                   (clojure.core/map people-by-id)
+                   (async/map vector)
+                   <!
+                   (clojure.core/map (partial get-helper "popularity"))
+                   avg)]
+     cast)))
+
+(go (js/alert (pr-str (<! (avg-cast-popularity 238)))))
+
+
+(defn omdb-by-title [q]
+  (go
+   (-> (str "http://www.omdbapi.com/?t=" q)
+       http-get
+       <!
+       :body
+       (cheshire/parse-string true))))
+
+(defn omdb-item [id]
+  (go
+   (-> (str "http://www.omdbapi.com/?tomatoes=true&i=" id)
+       http-get
+       <!
+       :body
+       (cheshire/parse-string true))))
+
+(<!! (omdb-by-title "the+matrix"))
+(<!! (omdb-item "tt1285016"))
+
+
+
+
+(time (dotimes [x 10]
+        (<!! (http-get "http://www.imdb.com/xml/find?json=1&q=ben+afleck"))))
+
+(time (let [chans (doall (for [x (range 10)]
+                             (http-get "http://www.imdb.com/xml/find?json=1&q=ben+afleck")))]
+        (doseq [c chans]
+          (<!! c))))
