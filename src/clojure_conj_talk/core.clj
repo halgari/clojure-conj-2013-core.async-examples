@@ -57,10 +57,10 @@
 (defn takep [c]
   (let [p (promise)]
     (take! c (fn [v] (deliver p v)))
-    p))
+    @p))
 
 ;; Now we can block the current thread waiting on the promise.
-(future (println "Got!" @(takep c)))
+(future (println "Got!" (takep c)))
 
 (put! c 42)
 
@@ -70,12 +70,12 @@
 (defn putp [c val]
   (let [p (promise)]
     (put! c val (fn [] (deliver p nil)))
-    p))
+    @p))
 
 
-(future (println "Done" @(putp c 42)))
+(future (println "Done" (putp c 42)))
 
-(future (println "Got!" @(takep c)))
+(future (println "Got!" (takep c)))
 
 
 ;; Well, that's exactly what clojure.core.async/<!! and >!! do
@@ -140,7 +140,7 @@
 (go (>! fbc 1)
     (println "done 1"))
 (go (>! fbc 2)
-    (println "done2"))
+    (println "done 2"))
 
 (<!! fbc)
 (<!! fbc)
@@ -220,6 +220,7 @@
 (alts!! [a b]) ;; returns [value chan]
 
 ;; Timeout is a channel that closes after X ms
+;; (close! (chan 42))
 
 (<!! (timeout 1000))
 
@@ -379,28 +380,6 @@
 (<!! (avg-cast-popularity 238))
 
 
-(defn omdb-by-title [q]
-  (go
-   (-> (str "http://www.omdbapi.com/?t=" q)
-       http-get
-       <!
-       :body
-       (cheshire/parse-string true))))
-
-(defn omdb-item [id]
-  (go
-   (-> (str "http://www.omdbapi.com/?tomatoes=true&i=" id)
-       http-get
-       <!
-       :body
-       (cheshire/parse-string true))))
-
-(<!! (omdb-by-title "the+matrix"))
-(<!! (omdb-item "tt1285016"))
-
-
-
-
 (time (dotimes [x 10]
         (<!! (http-get "http://www.imdb.com/xml/find?json=1&q=ben+afleck"))))
 
@@ -410,6 +389,92 @@
           (<!! c))))
 
 
+
+;;;; Mult ;;;;
+
+;; Create a mult. This allows data from one channel to be broadcast
+;; to many other channels that "tap" the mult.
+
+(def to-mult (chan 1))
+(def m (mult to-mult))
+
+(let [c (chan 1)]
+  (tap m c)
+  (go (loop []
+        (when-let [v (<! c)]
+          (println "Got! " v)
+          (recur))
+        (println "Exiting!"))))
+
+(>!! to-mult 42)
+(>!! to-mult 43)
+
+(close! to-mult)
+
+
+;;;; Pub/Sub ;;;
+
+;; This is a bit like Mult + Multimethods
+
+(def to-pub (chan 1))
+(def p (pub to-pub :tag))
+
+(def print-chan (chan 1))
+
+(go (loop []
+      (when-let [v (<! print-chan)]
+        (println v)
+        (recur))))
+
+;; This guy likes updates about cats.
+(let [c (chan 1)]
+  (sub p :cats c)
+  (go (println "I like cats:")
+      (loop []
+        (when-let [v (<! c)]
+          (>! print-chan (pr-str "Cat guy got: " v))
+          (recur))
+        (println "Cat guy exiting"))))
+
+;; This guy likes updates about dogs
+(let [c (chan 1)]
+  (sub p :dogs c)
+  (go (println "I like dogs:")
+      (loop []
+        (when-let [v (<! c)]
+          (>! print-chan (pr-str "Dog guy got: " v))
+          (recur))
+        (println "Dog guy exiting"))))
+
+;; This guy likes updates about animals
+(let [c (chan 1)]
+  (sub p :dogs c)
+  (sub p :cats c)
+  (go (println "I like cats or dogs:")
+      (loop []
+        (when-let [v (<! c)]
+          (>! print-chan (pr-str "Cat/Dog guy got: " v))
+          (recur))
+        (println "Cat/dog guy exiting"))))
+
+
+(defn send-with-tags [msg]
+  (doseq [tag (:tags msg)]
+    (println "sending... " tag)
+    (>!! to-pub {:tag tag
+                 :msg (:msg msg)})))
+
+(send-with-tags {:msg "New Cat Story"
+                 :tags [:cats]})
+
+(send-with-tags {:msg "New Dog Story"
+                 :tags [:dogs]})
+
+(send-with-tags {:msg "New Pet Story"
+                 :tags [:cats :dogs]})
+
+
+(close! to-pub)
 
 ;;;; Actors ;;;;
 
@@ -469,6 +534,24 @@
 
 
 
+;;; Limited rate updates to an atom
+
+(def a (atom 1))
+(def watch-c (chan (dropping-buffer 1)))
+
+(add-watch a :chan-watch
+           (fn [k r o n]
+               (put! watch-c :ping)))
+
+(go (while true
+      (let [tout (timeout 100)]
+        (when-let [x (<! watch-c)]
+          (println "-----> "@a)
+          (<! tout)))))
+
+(dotimes [x 1000]
+  (swap! a inc))
+
 ;;;;;; Limited Access to a Shared Resource ;;;;;
 
 
@@ -505,11 +588,6 @@
 
 (cemerick.piggieback/cljs-repl
   :repl-env (cljs.repl.browser/repl-env :port 9000))
-
-#_(require-macros '[cljs.core.async.macros :refer [go]])
-
-
-#_(cemerick.piggieback/cljs-repl)
 
 (ns cljs-examples
   (:require [cljs.core.async :refer [chan put! take! timeout] :as async]
@@ -561,7 +639,6 @@
           (.fillRect ctx x y 10 10)
           (<! (timeout (rand-int 1000)))))))
 
-
 (defn make-scene [canvas rows cols]
   (dotimes [x cols]
     (dotimes [y rows]
@@ -599,6 +676,8 @@
   (request-and-process "movie/top_rated?"))
 
 (go (println (<! (top-rated-movies))))
+
+
 
 (defn movie-by-id [id]
   (request-and-process (str "movie/" id "?")))
@@ -661,11 +740,12 @@
 
 
 
+(go
+ (time (dotimes [x 10]
+         (<! (people-by-id 3144)))))
 
-(time (dotimes [x 10]
-        (<!! (http-get "http://www.imdb.com/xml/find?json=1&q=ben+afleck"))))
-
-(time (let [chans (doall (for [x (range 10)]
-                             (http-get "http://www.imdb.com/xml/find?json=1&q=ben+afleck")))]
-        (doseq [c chans]
-          (<!! c))))
+(go
+ (time (let [chans (doall (for [x (range 10)]
+                            (people-by-id 3144)))]
+         (doseq [c chans]
+           (<! c)))))
