@@ -481,7 +481,6 @@
 
 ;;;; Actors ;;;;
 
-;; Please don't do this:
 
 (defprotocol IActor
   (! [this msg]))
@@ -524,8 +523,6 @@
 ;; 3) specify how to handle the next message
 
 
-;; <pontificate>
-
 ;; My critique of this system
 ;; 1) unbounded queue (mailbox)
 ;; 2) internal mutating state (hidden in function closures)
@@ -533,7 +530,7 @@
 ;; 4) couples a queue, with mutating state, with a process
 ;; 5) basically async OOP
 
-;; </pontificate>
+;; </critique>
 
 
 
