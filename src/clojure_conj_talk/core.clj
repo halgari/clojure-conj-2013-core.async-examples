@@ -88,6 +88,8 @@
 ;; But future doesn't really fit here, as it returns a promise, why not make
 ;; it return a channel? This is what core.async's thread macro does:
 
+(thread 42)
+
 (<!! (thread 42))
 
 (thread (println "It works!" (<!! (thread 42))))
@@ -99,6 +101,7 @@
 ;; does. It lets you write code that looks like the above code,
 ;; but it re-writes all your code to use callbacks.
 
+(go 42)
 
 (<!! (go 42))
 
