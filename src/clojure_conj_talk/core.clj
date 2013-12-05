@@ -10,7 +10,7 @@
 (def c (chan))
 
 
-
+(chan)
 ;; We can attach listeners via take!
 
 (take! c (fn [v] (println v)))
@@ -107,7 +107,7 @@
 
 (go (println "It works!" (<! (go 42))))
 
-;; Wait....why did we use <!? Well <!! is simply a function that uses
+;; Wait....why did we use <!! Well <!! is simply a function that uses
 ;; blocking promises to wait for channel values. That would mess up the fixed
 ;; size thread pool that go blocks dispatch in. So we must define two sets
 ;; of operations
@@ -173,42 +173,13 @@
 
 (<!! sbc) ;; returns 2
 
-;;; Custom Buffers ;;;;
+;;; Closing a channel
 
-; Need not be thread-safe. They will only be accessed by a single
-; thread at a time
+(def c (chan))
 
-(require '[clojure.core.async.impl.protocols :as impl])
-(import '[java.util LinkedList])
+(close! c)
 
-(defn debug-buffer [n a]
-  (let [buf (LinkedList.)
-        dbb (reify
-              impl/Buffer
-              (full? [this]
-                (= (.size buf) n))
-              (remove! [this]
-                (swap! a dec)
-                (.removeLast buf))
-              (add! [this itm]
-                (swap! a inc)
-                (.addFirst buf itm))
-              clojure.lang.Counted
-              (count [this]
-                (.size buf)))]
-    dbb))
-
-(def a-size (atom 0))
-
-(def dbbc (chan (debug-buffer 20 a-size)))
-
-(>!! dbbc 0)
-(>!! dbbc 1)
-(>!! dbbc 2)
-
-(println @a-size)
-
-(println (<!! dbbc) @a-size)
+(<!! c)
 
 ;;;; Alt & Timeout ;;;;
 
@@ -225,7 +196,7 @@
 ;; Timeout is a channel that closes after X ms
 ;; (close! (chan 42))
 
-(<!! (timeout 1000))
+(<!! (timeout 2000))
 
 ;; Often used with alt
 
@@ -383,13 +354,18 @@
 (<!! (avg-cast-popularity 238))
 
 
-(time (dotimes [x 10]
-        (<!! (http-get "http://www.imdb.com/xml/find?json=1&q=ben+afleck"))))
+(time (do (dotimes [x 10]
+            (<!! (http-get "http://www.imdb.com/xml/find?json=1&q=ben+afleck")))
+          nil))
 
-(time (let [chans (doall (for [x (range 10)]
-                             (http-get "http://www.imdb.com/xml/find?json=1&q=ben+afleck")))]
-        (doseq [c chans]
-          (<!! c))))
+(time (do (->> (for [x (range 10)]
+                 (http-get "http://www.imdb.com/xml/find?json=1&q=ben+afleck"))
+               doall
+               async/merge
+               (async/take 10)
+               (async/into [])
+               <!!)
+          nil))
 
 
 
@@ -591,6 +567,7 @@
 
 (ns cljs-examples
   (:require [cljs.core.async :refer [chan put! take! timeout] :as async]
+            [clojure.walk :refer [prewalk]]
             [goog.net.XhrIo])
   (:require-macros [cljs.core.async.macros :refer [go]]))
 
@@ -609,19 +586,6 @@
 
 (def canvas (.getElementById js/document "canvas"))
 
-
-#_(defn ptake [chans]
-  (let [chanc (count chans)
-        a (atom chanc)
-        results (atom (vec (repeat chanc nil)))
-        result-chan (chan)]
-    (dotimes [x chanc]
-      (take! (nth chans x)
-             (fn [v]
-               (swap! results assoc x v)
-               (if (= 0 (swap! a dec))
-                 (put! result-chan @results)))))
-    result-chan))
 
 (def colors ["#FF0000"
              "#00FF00"
@@ -650,12 +614,26 @@
 
 ;;; Same HTTP Examples, but in the browser
 
+(defn fixup-keys [x]
+  (prewalk
+   (fn [x]
+     (if (map? x)
+       (zipmap (map keyword (keys x))
+               (vals x))
+       x))
+   x))
+
+;; IO is a tad different in JS, so this function has to be re-written
+;; for ClojureScript.
 (defn http-get [url]
   (let [c (chan 1)]
     (goog.net.XhrIo/send url (fn [e]
-                               (let [xhr (.-target e)
-                                     obj (.getResponseJson xhr)]
-                                 (put! c (js->clj obj)))))
+                               (->> e
+                                    .-target
+                                    .getResponseJson
+                                    js->clj
+                                    fixup-keys
+                                    (put! c))))
     c))
 
 
@@ -700,19 +678,16 @@
 
 (avg [1 2 3 4 5])
 
-(defn get-helper [k col]
-  (get col k))
-
 (defn avg-cast-popularity [id]
   (go
    (let [cast (->> (movie-cast id)
                    <!
-                   (get-helper "cast")
-                   (clojure.core/map (partial get-helper "id"))
+                   :cast
+                   (clojure.core/map :id)
                    (clojure.core/map people-by-id)
                    (async/map vector)
                    <!
-                   (clojure.core/map (partial get-helper "popularity"))
+                   (clojure.core/map :popularity)
                    avg)]
      cast)))
 
